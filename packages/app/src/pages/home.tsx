@@ -1,5 +1,17 @@
 import type { Session } from "@opencode-ai/sdk/v2/client"
-import { batch, createEffect, createMemo, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js"
+import {
+  batch,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  on,
+  onCleanup,
+  onMount,
+  Show,
+  Switch,
+} from "solid-js"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { createStore } from "solid-js/store"
 import { useQuery } from "@tanstack/solid-query"
@@ -47,6 +59,10 @@ import { useSettings } from "@/context/settings"
 import { ServerRowMenu } from "@/components/server/server-row-menu"
 import { ServerHealthIndicator } from "@/components/server/server-row"
 import { type ServerHealth } from "@/utils/server-health"
+import { discoverNovelProjects, restoreNovelProjects } from "./home-novel-projects"
+import { DialogNovelManuscript } from "@/components/dialog-novel-manuscript"
+import { manuscriptSession } from "./home-novel-manuscript"
+import { DialogCreateNovel } from "@/components/dialog-create-novel"
 
 const HOME_SESSION_LIMIT = 64
 const HOME_ROW_LAYOUT =
@@ -140,9 +156,30 @@ function HomeDesign() {
     selection: { server: server.key } as HomeProjectSelection,
     searchFocused: false,
   })
+  const discoveredNovelRoots = new Set<string>()
+  const discoveryInFlight = new Set<string>()
+  const [restoreRetry, setRestoreRetry] = createSignal(0)
+  let restoreTimer: number | undefined
+
+  onCleanup(() => {
+    if (restoreTimer !== undefined) window.clearTimeout(restoreTimer)
+  })
+
+  function retryDiscovery() {
+    if (restoreTimer !== undefined) return
+    restoreTimer = window.setTimeout(() => {
+      restoreTimer = undefined
+      setRestoreRetry((value) => value + 1)
+    }, 1000)
+  }
 
   const focusedServer = createMemo(
     () => global.servers.list().find((conn) => ServerConnection.key(conn) === state.selection.server) ?? server.current,
+  )
+  const localServer = createMemo(
+    () =>
+      global.servers.list().find((conn) => ServerConnection.local(conn)) ??
+      (ServerConnection.local(server.current) ? server.current : undefined),
   )
   const focusedServerCtx = createMemo(() => {
     const conn = focusedServer()
@@ -238,6 +275,56 @@ function HomeDesign() {
     navigate(pending.href)
   })
 
+  createEffect(() => {
+    restoreRetry()
+    const ctx = focusedServerCtx()
+    const conn = focusedServer()
+    if (!ctx || !conn) return
+    const serverKey = ServerConnection.key(conn)
+    const openProjects = ctx.projects.list()
+    if (openProjects.length === 0) {
+      const key = `${serverKey}:current-project`
+      if (!discoveredNovelRoots.has(key) && !discoveryInFlight.has(key)) {
+        discoveryInFlight.add(key)
+        void restoreNovelProjects(ctx.sdk.client, (directory, title) => {
+          if (title) ctx.sync.project.meta(directory, { standalone: true, name: title })
+          ctx.projects.open(directory)
+        })
+          .then((directory) => {
+            if (directory) {
+              discoveredNovelRoots.add(key)
+            } else {
+              retryDiscovery()
+            }
+          })
+          .finally(() => discoveryInFlight.delete(key))
+      }
+      return
+    }
+
+    for (const project of openProjects) {
+      if (project.projectMeta?.standalone) continue
+      const root = project.worktree
+      const key = `${serverKey}:${pathKey(root)}`
+      if (discoveredNovelRoots.has(key) || discoveryInFlight.has(key)) continue
+      discoveryInFlight.add(key)
+
+      void discoverNovelProjects(ctx.sdk.client, root)
+        .then((novels) => {
+          if (!novels) {
+            retryDiscovery()
+            return
+          }
+          discoveredNovelRoots.add(key)
+          for (const novel of novels) {
+            ctx.sync.project.meta(novel.directory, { standalone: true, name: novel.title })
+            ctx.projects.open(novel.directory)
+          }
+        })
+        .finally(() => discoveryInFlight.delete(key))
+    }
+  })
+
   function focusServer(conn: ServerConnection.Any) {
     setSelection({ server: ServerConnection.key(conn) })
   }
@@ -293,6 +380,26 @@ function HomeDesign() {
     })
   }
 
+  function openManuscript(conn: ServerConnection.Any, project: LocalProject) {
+    const client = global.createServerCtx(conn).sdk.client
+    dialog.show(() => (
+      <DialogNovelManuscript
+        title={displayName(project)}
+        directory={project.worktree}
+        client={client}
+        onSelect={async (chapter) => {
+          dialog.close()
+          const session = await manuscriptSession(client, project.worktree)
+          if (!session) return
+          navigateOnServer(
+            conn,
+            `/${base64Encode(project.worktree)}/session/${session.id}?file=${encodeURIComponent(chapter.sourcePath)}`,
+          )
+        }}
+      />
+    ))
+  }
+
   function unseenCount(conn: ServerConnection.Any, project: LocalProject) {
     if (ServerConnection.key(conn) !== server.key) return 0
     return directories(project).reduce((total, directory) => total + notification.project.unseenCount(directory), 0)
@@ -321,14 +428,38 @@ function HomeDesign() {
       addProjects(conn, homeProjectDirectories(result))
     }
 
-    const server = global.createServerCtx(conn)
-
     pickDirectory({
       server: conn,
       title: language.t("command.project.open"),
       multiple: true,
       onSelect: resolve,
     })
+  }
+
+  function createNovel() {
+    const conn = localServer()
+    if (!conn) return
+    dialog.show(() => (
+      <DialogCreateNovel
+        onCreated={async (project) => {
+          const directory = project.rootPath
+          if (!directory) throw new Error("项目已创建，但服务没有返回项目目录。")
+          const ctx = global.createServerCtx(conn)
+          ctx.sync.project.meta(directory, { standalone: true, name: project.title })
+          ctx.projects.open(directory)
+          ctx.projects.touch(directory)
+          const session = await ctx.sdk.client.session
+            .create({ directory, title: "小说导演" })
+            .then((result) => result.data)
+            .catch(() => {
+              navigateOnServer(conn, `/${base64Encode(directory)}/session`)
+              throw new Error("项目已创建，但小说导演会话暂时未能打开。项目已经出现在首页，可以直接进入后重试。")
+            })
+          if (!session) throw new Error("项目已创建，但无法打开小说导演会话。")
+          navigateOnServer(conn, `/${base64Encode(directory)}/session/${session.id}`)
+        }}
+      />
+    ))
   }
 
   function openSettings() {
@@ -347,7 +478,10 @@ function HomeDesign() {
           selectProject={selectProject}
           openNewSession={openProjectNewSession}
           chooseProject={(conn) => void chooseProject(conn)}
+          createNovel={createNovel}
+          canCreateNovel={!!localServer()}
           editProject={editProject}
+          openManuscript={openManuscript}
           closeProject={(conn, directory) => {
             const next = closeHomeProject(
               state.selection,
@@ -441,7 +575,10 @@ function HomeProjectColumn(props: {
   selectProject: (server: ServerConnection.Any, directory: string) => void
   openNewSession: (server: ServerConnection.Any, directory: string) => void
   chooseProject: (server: ServerConnection.Any) => void
+  createNovel: () => void
+  canCreateNovel: boolean
   editProject: (server: ServerConnection.Any, project: LocalProject) => void
+  openManuscript: (server: ServerConnection.Any, project: LocalProject) => void
   closeProject: (server: ServerConnection.Any, directory: string) => void
   clearNotifications: (server: ServerConnection.Any, project: LocalProject) => void
   unseenCount: (server: ServerConnection.Any, project: LocalProject) => number
@@ -454,8 +591,13 @@ function HomeProjectColumn(props: {
   const controller = useServerManagementController({ navigateOnAdd: false })
   return (
     <aside class="flex min-w-0 flex-col lg:pt-[52px] mt-14 gap-4" aria-label={props.language.t("home.projects")}>
-      <div class="flex h-7 min-w-0 items-center justify-between pl-1.5">
+      <div class="flex h-7 min-w-0 items-center justify-between gap-2 pl-1.5">
         <div class={HOME_SECTION_LABEL}>{props.language.t("home.projects")}</div>
+        <Show when={props.canCreateNovel}>
+          <ButtonV2 variant="contrast" size="small" icon="book" onClick={props.createNovel}>
+            创建小说
+          </ButtonV2>
+        </Show>
         <Show when={global.servers.list().length === 1}>
           <IconButtonV2
             data-action="home-add-project"
@@ -587,6 +729,7 @@ function HomeProjectList(props: {
   selectProject: (server: ServerConnection.Any, directory: string) => void
   openNewSession: (server: ServerConnection.Any, directory: string) => void
   editProject: (server: ServerConnection.Any, project: LocalProject) => void
+  openManuscript: (server: ServerConnection.Any, project: LocalProject) => void
   closeProject: (server: ServerConnection.Any, directory: string) => void
   clearNotifications: (server: ServerConnection.Any, project: LocalProject) => void
   unseenCount: (server: ServerConnection.Any, project: LocalProject) => number
@@ -607,6 +750,7 @@ function HomeProjectList(props: {
             selectProject={props.selectProject}
             openNewSession={props.openNewSession}
             editProject={props.editProject}
+            openManuscript={props.openManuscript}
             closeProject={props.closeProject}
             clearNotifications={props.clearNotifications}
             language={props.language}
@@ -625,6 +769,7 @@ function HomeProjectRow(props: {
   selectProject: (server: ServerConnection.Any, directory: string) => void
   openNewSession: (server: ServerConnection.Any, directory: string) => void
   editProject: (server: ServerConnection.Any, project: LocalProject) => void
+  openManuscript: (server: ServerConnection.Any, project: LocalProject) => void
   closeProject: (server: ServerConnection.Any, directory: string) => void
   clearNotifications: (server: ServerConnection.Any, project: LocalProject) => void
   language: ReturnType<typeof useLanguage>
@@ -635,7 +780,7 @@ function HomeProjectRow(props: {
       <button
         type="button"
         data-component="home-project-row"
-        class={`${HOME_PROJECT_NAV_ROW} pr-16`}
+        class={`${HOME_PROJECT_NAV_ROW} ${props.project.projectMeta?.standalone ? "pr-26" : "pr-16"}`}
         data-selected={props.selected ? "" : undefined}
         aria-current={props.selected ? "page" : undefined}
         onClick={() => props.selectProject(props.server, props.project.worktree)}
@@ -647,6 +792,17 @@ function HomeProjectRow(props: {
         class="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover/project:opacity-100 focus-within:opacity-100 data-[menu=true]:opacity-100"
         data-menu={state.menuOpen}
       >
+        <Show when={props.project.projectMeta?.standalone}>
+          <ButtonV2
+            data-action="home-project-manuscript"
+            variant="ghost-muted"
+            size="small"
+            class="h-6 px-1.5 text-[11px] [font-weight:530]"
+            onClick={() => props.openManuscript(props.server, props.project)}
+          >
+            正文
+          </ButtonV2>
+        </Show>
         <IconButtonV2
           data-action="home-project-new-session"
           variant="ghost-muted"
@@ -675,6 +831,9 @@ function HomeProjectRow(props: {
               <MenuV2.Item onSelect={() => props.openNewSession(props.server, props.project.worktree)}>
                 {props.language.t("command.session.new")}
               </MenuV2.Item>
+              <Show when={props.project.projectMeta?.standalone}>
+                <MenuV2.Item onSelect={() => props.openManuscript(props.server, props.project)}>打开正文</MenuV2.Item>
+              </Show>
               <MenuV2.Item onSelect={() => props.editProject(props.server, props.project)}>
                 {props.language.t("common.edit")}
               </MenuV2.Item>
@@ -1095,7 +1254,6 @@ function groupSessions(records: HomeSessionRecord[], language: ReturnType<typeof
 
 function LegacyHome() {
   const sync = useServerSync()
-  const platform = usePlatform()
   const pickDirectory = useDirectoryPicker()
   const dialog = useDialog()
   const navigate = useNavigate()

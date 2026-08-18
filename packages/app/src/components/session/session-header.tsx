@@ -8,7 +8,7 @@ import { Spinner } from "@opencode-ai/ui/spinner"
 import { showToast } from "@/utils/toast"
 import { Tooltip, TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { getFilename } from "@opencode-ai/core/util/path"
-import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createResource, createSignal, For, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Portal } from "solid-js/web"
 import { useCommand } from "@/context/command"
@@ -27,6 +27,18 @@ import { Persist, persisted } from "@/utils/persist"
 import { StatusPopover, StatusPopoverV2 } from "../status-popover"
 import { IconButtonV2 } from "@opencode-ai/ui/v2/icon-button-v2"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
+import { useNavigate, useSearchParams } from "@solidjs/router"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { useSDK } from "@/context/sdk"
+import { usePermission } from "@/context/permission"
+import type { ApprovalMode } from "@/context/permission-auto-respond"
+import { DialogNovelManuscript } from "@/components/dialog-novel-manuscript"
+
+const APPROVAL_MODES: { value: ApprovalMode; label: string; description: string }[] = [
+  { value: "ask", label: "请求批准", description: "每次敏感操作都询问" },
+  { value: "review", label: "帮我批准", description: "安全操作自动放行" },
+  { value: "full", label: "完全访问", description: "所有权限请求自动放行" },
+]
 
 const OPEN_APPS = [
   "vscode",
@@ -141,6 +153,11 @@ export function SessionHeader() {
   const sync = useSync()
   const terminal = useTerminal()
   const { params, view } = useSessionLayout()
+  const dialog = useDialog()
+  const sdk = useSDK()
+  const permission = usePermission()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams<{ file?: string }>()
 
   const projectDirectory = createMemo(() => decode64(params.dir) ?? "")
   const project = createMemo(() => {
@@ -160,6 +177,41 @@ export function SessionHeader() {
   const tree = createMemo(() => (isDesktopV2() ? settings.general.showFileTree() : true))
   const term = createMemo(() => (isDesktopV2() ? settings.general.showTerminal() : true))
   const status = createMemo(() => (isDesktopV2() ? settings.general.showStatus() : true))
+  const isNovel = createMemo(() => project()?.projectMeta?.standalone === true)
+  const [storedChildSessions] = createResource(
+    () => ({ sessionID: params.id, directory: projectDirectory() }),
+    ({ sessionID, directory }) =>
+      sdk.client.session.children({ sessionID, directory }).then((result) => result.data ?? []),
+  )
+  const childSessions = createMemo(() => {
+    const sessions = new Map((storedChildSessions() ?? []).map((session) => [session.id, session]))
+    for (const session of sync.data.session) {
+      if (session.parentID === params.id) sessions.set(session.id, session)
+    }
+    return [...sessions.values()].sort(
+      (a, b) => (b.time.updated ?? b.time.created) - (a.time.updated ?? a.time.created),
+    )
+  })
+  const approvalMode = createMemo(() => permission.approvalMode(params.id, projectDirectory()))
+  const approvalModeLabel = createMemo(
+    () => APPROVAL_MODES.find((item) => item.value === approvalMode())?.label ?? "帮我批准",
+  )
+
+  const openManuscript = () => {
+    const directory = projectDirectory()
+    if (!directory) return
+    dialog.show(() => (
+      <DialogNovelManuscript
+        title={name()}
+        directory={directory}
+        client={sdk.client}
+        onSelect={(chapter) => {
+          dialog.close()
+          setSearchParams({ ...searchParams, file: chapter.sourcePath })
+        }}
+      />
+    ))
+  }
 
   const [exists, setExists] = createStore<Partial<Record<OpenApp, boolean>>>({
     finder: true,
@@ -321,6 +373,75 @@ export function SessionHeader() {
       <Show when={rightMount()}>
         {(mount) => (
           <Portal mount={mount()}>
+            <Show when={params.id}>
+              <DropdownMenu gutter={4} placement="bottom-end">
+                <DropdownMenu.Trigger as={Button} type="button" variant="ghost" size="small" class="h-7 px-3 shrink-0">
+                  {approvalModeLabel()}
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content>
+                    <DropdownMenu.Group>
+                      <DropdownMenu.GroupLabel>权限模式</DropdownMenu.GroupLabel>
+                      <For each={APPROVAL_MODES}>
+                        {(item) => (
+                          <DropdownMenu.Item
+                            onSelect={() => permission.setApprovalMode(params.id, projectDirectory(), item.value)}
+                          >
+                            <div class="flex min-w-0 flex-col">
+                              <DropdownMenu.ItemLabel>
+                                {approvalMode() === item.value ? `✓ ${item.label}` : item.label}
+                              </DropdownMenu.ItemLabel>
+                              <span class="text-11-regular text-text-weak">{item.description}</span>
+                            </div>
+                          </DropdownMenu.Item>
+                        )}
+                      </For>
+                    </DropdownMenu.Group>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu>
+            </Show>
+            <Show when={params.id}>
+              <DropdownMenu gutter={4} placement="bottom-end">
+                <DropdownMenu.Trigger as={Button} type="button" variant="ghost" size="small" class="h-7 px-3 shrink-0">
+                  子 Agent {childSessions().length}
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content>
+                    <DropdownMenu.Group>
+                      <DropdownMenu.GroupLabel>子 Agent</DropdownMenu.GroupLabel>
+                      <Show
+                        when={childSessions().length > 0}
+                        fallback={<div class="px-3 py-2 text-12-regular text-text-weak">暂无子 Agent</div>}
+                      >
+                        <For each={childSessions()}>
+                          {(child) => (
+                            <DropdownMenu.Item onSelect={() => navigate(`/${params.dir}/session/${child.id}`)}>
+                              <DropdownMenu.ItemLabel>{child.title}</DropdownMenu.ItemLabel>
+                              <Show when={(sync.data.session_status[child.id]?.type ?? "idle") !== "idle"}>
+                                <span class="text-12-regular text-text-weak">运行中</span>
+                              </Show>
+                            </DropdownMenu.Item>
+                          )}
+                        </For>
+                      </Show>
+                    </DropdownMenu.Group>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu>
+            </Show>
+            <Show when={isNovel()}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="small"
+                class="h-7 px-3 shrink-0"
+                onClick={openManuscript}
+                aria-label="正文"
+              >
+                正文
+              </Button>
+            </Show>
             <Show
               when={isDesktopV2}
               fallback={

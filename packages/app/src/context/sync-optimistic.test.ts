@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { Message, Part } from "@opencode-ai/sdk/v2/client"
-import { applyOptimisticAdd, applyOptimisticRemove, mergeOptimisticPage } from "./sync"
+import { applyOptimisticAdd, applyOptimisticRemove, mergeOptimisticPage } from "./directory-sync"
 
 type Text = Extract<Part, { type: "text" }>
 
@@ -11,6 +11,11 @@ const userMessage = (id: string, sessionID: string): Message => ({
   time: { created: 1 },
   agent: "assistant",
   model: { providerID: "openai", modelID: "gpt" },
+})
+
+const userMessageAt = (id: string, sessionID: string, created: number): Message => ({
+  ...userMessage(id, sessionID),
+  time: { created },
 })
 
 const textPart = (id: string, sessionID: string, messageID: string): Text => ({
@@ -71,6 +76,20 @@ describe("sync optimistic reducers", () => {
     expect(page.part.find((x) => x.id === "msg_2")?.part.map((x) => x.id)).toEqual(["prt_2"])
     expect(page.confirmed).toEqual([])
     expect(page.complete).toBe(true)
+  })
+
+  test("mergeOptimisticPage orders restarted message ids by creation time", () => {
+    const sessionID = "ses_1"
+    const page = mergeOptimisticPage(
+      {
+        session: [userMessageAt("msg_fff", sessionID, 1)],
+        part: [],
+        complete: true,
+      },
+      [{ message: userMessageAt("msg_000", sessionID, 2), parts: [] }],
+    )
+
+    expect(page.session.map((x) => x.id)).toEqual(["msg_fff", "msg_000"])
   })
 
   test("mergeOptimisticPage keeps missing optimistic parts until the server has them", () => {

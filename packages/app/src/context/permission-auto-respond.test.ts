@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import type { PermissionRequest, Session } from "@opencode-ai/sdk/v2/client"
 import { base64Encode } from "@opencode-ai/core/util/encode"
-import { autoRespondsPermission, isDirectoryAutoAccepting } from "./permission-auto-respond"
+import {
+  approvalModeFor,
+  autoRespondsPermission,
+  autoReviewsPermission,
+  isDirectoryAutoAccepting,
+} from "./permission-auto-respond"
 
 const session = (input: { id: string; parentID?: string }) =>
   ({
@@ -98,5 +103,25 @@ describe("isDirectoryAutoAccepting", () => {
     const directory = "/tmp/project"
     const autoAccept = { [`${base64Encode(directory)}/*`]: false }
     expect(isDirectoryAutoAccepting(autoAccept, directory)).toBe(false)
+  })
+})
+
+describe("approval modes", () => {
+  test("defaults to review and inherits a parent mode", () => {
+    const directory = "/tmp/project"
+    const sessions = [session({ id: "root" }), session({ id: "child", parentID: "root" })]
+
+    expect(approvalModeFor({}, {}, sessions, "root", directory)).toBe("review")
+    expect(
+      approvalModeFor({ [`${base64Encode(directory)}/root`]: "full" }, {}, sessions, "child", directory),
+    ).toBe("full")
+  })
+
+  test("auto-review allows safe work but keeps consequential mutations gated", () => {
+    expect(autoReviewsPermission({ permission: "read" })).toBe(true)
+    expect(autoReviewsPermission({ permission: "novel-factory_generateOutline" })).toBe(true)
+    expect(autoReviewsPermission({ permission: "edit" })).toBe(false)
+    expect(autoReviewsPermission({ permission: "novel-factory_approveOutline" })).toBe(false)
+    expect(autoReviewsPermission({ permission: "novel-factory_startAutopilot" })).toBe(false)
   })
 })

@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createMemo, onCleanup, type JSX } from "solid-js"
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createMediaQuery } from "@solid-primitives/media"
 import { Tabs } from "@opencode-ai/ui/tabs"
@@ -24,7 +24,12 @@ import { useSettings } from "@/context/settings"
 import { useSync } from "@/context/sync"
 import { createFileTabListSync } from "@/pages/session/file-tab-scroll"
 import { FileTabContent } from "@/pages/session/file-tabs"
-import { createOpenSessionFileTab, createSessionTabs, getTabReorderIndex, type Sizing } from "@/pages/session/helpers"
+import {
+  createOpenSessionFileTab,
+  createSessionTabs,
+  getTabReorderIndex,
+  type Sizing,
+} from "@/pages/session/helpers"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
 
@@ -123,6 +128,19 @@ export function SessionSidePanel(props: {
   const openReviewPanel = () => {
     if (!view().reviewPanel.opened()) view().reviewPanel.open()
   }
+
+  const [artifact, setArtifact] = createSignal<{ href: string; label: string }>()
+  const openArtifact = (event: Event) => {
+    if (!(event instanceof CustomEvent)) return
+    if (typeof event.detail?.href !== "string") return
+    const url = new URL(event.detail.href)
+    if (url.origin !== "http://127.0.0.1:4177") return
+    setArtifact({ href: url.href, label: String(event.detail.label || url.pathname) })
+    openReviewPanel()
+  }
+
+  onMount(() => window.addEventListener("opencode:artifact-open", openArtifact))
+  onCleanup(() => window.removeEventListener("opencode:artifact-open", openArtifact))
 
   const openTab = createOpenSessionFileTab({
     normalizeTab,
@@ -234,7 +252,7 @@ export function SessionSidePanel(props: {
                 "pointer-events-none": !reviewOpen(),
               }}
             >
-              <div class="size-full min-w-0 h-full bg-background-base">
+              <div class="relative size-full min-w-0 h-full bg-background-base">
                 <DragDropProvider
                   onDragStart={handleDragStart}
                   onDragEnd={handleDragEnd}
@@ -361,6 +379,24 @@ export function SessionSidePanel(props: {
                     </Show>
                   </DragOverlay>
                 </DragDropProvider>
+                <Show when={artifact()} keyed>
+                  {(item) => (
+                    <div class="absolute inset-0 z-20 flex flex-col bg-background-base">
+                      <div class="h-10 shrink-0 px-3 flex items-center gap-2 border-b border-border-weaker-base">
+                        <div class="min-w-0 flex-1 truncate text-13-medium" title={item.href}>
+                          {item.label}
+                        </div>
+                        <IconButton
+                          icon="close-small"
+                          variant="ghost"
+                          aria-label={language.t("common.closeTab")}
+                          onClick={() => setArtifact()}
+                        />
+                      </div>
+                      <iframe class="min-h-0 flex-1 w-full bg-white" src={item.href} title={item.label} />
+                    </div>
+                  )}
+                </Show>
               </div>
             </div>
 

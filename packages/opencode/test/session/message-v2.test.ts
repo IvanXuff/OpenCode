@@ -1658,4 +1658,21 @@ describe("session.message-v2.latest", () => {
     expect(state.tasks).toHaveLength(1)
     expect(state.tasks[0]).toMatchObject({ type: "compaction", auto: true })
   })
+
+  test("creation time wins when message ids reset after an instance restart", () => {
+    const oldAssistant = assistantInfo("msg_fff", "msg_old")
+    oldAssistant.time.created = 100
+    oldAssistant.finish = "stop"
+    const resumedUser = userInfo("msg_000")
+    resumedUser.time.created = 200
+
+    const state = MessageV2.latest([
+      { info: oldAssistant, parts: [] },
+      { info: resumedUser, parts: [] },
+    ])
+
+    expect(state.assistant?.id).toBe("msg_fff")
+    expect(state.user?.id).toBe("msg_000")
+    expect(MessageV2.isAfter(state.user!, state.assistant!)).toBe(true)
+  })
 })

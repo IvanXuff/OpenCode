@@ -67,6 +67,27 @@ type CopyLabels = {
 
 const urlPattern = /^https?:\/\/[^\s<>()`"']+$/
 
+export function localArtifactHref(href: string) {
+  try {
+    const url = new URL(href)
+    if (url.origin !== "http://127.0.0.1:4177") return
+    return url.href
+  } catch {
+    return
+  }
+}
+
+export function localArtifactPreviewHref(href: string) {
+  const source = localArtifactHref(href)
+  if (!source) return
+  const url = new URL(source)
+  const match = url.pathname.match(/^\/(?:api\/projects|artifacts)\/([^/]+)/)
+  if (!match) return
+  const preview = new URL(`/artifacts/${match[1]}/preview`, url.origin)
+  preview.searchParams.set("href", `${url.pathname}${url.search}`)
+  return preview.href
+}
+
 function codeUrl(text: string) {
   const href = text.trim().replace(/[),.;!?]+$/, "")
   if (!urlPattern.test(href)) return
@@ -195,6 +216,18 @@ function setupCodeCopy(root: HTMLDivElement, getLabels: () => CopyLabels) {
   const handleClick = async (event: MouseEvent) => {
     const target = event.target
     if (!(target instanceof Element)) return
+
+    const link = target.closest("a")
+    const href = link instanceof HTMLAnchorElement ? localArtifactPreviewHref(link.href) : undefined
+    if (href && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+      event.preventDefault()
+      window.dispatchEvent(
+        new CustomEvent("opencode:artifact-open", {
+          detail: { href, label: link?.textContent?.trim() || new URL(href).pathname },
+        }),
+      )
+      return
+    }
 
     const button = target.closest('[data-slot="markdown-copy-button"]')
     if (!(button instanceof HTMLButtonElement)) return

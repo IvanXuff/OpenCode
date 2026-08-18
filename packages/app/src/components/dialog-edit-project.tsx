@@ -79,7 +79,7 @@ export function DialogEditProject(props: { project: LocalProject; server: Server
       const name = store.name.trim() === folderName() ? "" : store.name.trim()
       const start = store.startup.trim()
 
-      if (props.project.id && props.project.id !== "global") {
+      if (props.project.id && props.project.id !== "global" && !props.project.projectMeta?.standalone) {
         await serverSDK().client.project.update({
           projectID: props.project.id,
           directory: props.project.worktree,

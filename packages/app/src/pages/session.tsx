@@ -47,6 +47,7 @@ import { type FollowupDraft, sendFollowupDraft } from "@/components/prompt-input
 import { createSessionComposerState, SessionComposerRegion } from "@/pages/session/composer"
 import {
   createOpenReviewFile,
+  createOpenSessionFileTab,
   createSessionTabs,
   createSizing,
   focusTerminalById,
@@ -58,6 +59,7 @@ import { useSessionLayout } from "@/pages/session/session-layout"
 import { useServer } from "@/context/server"
 import { syncSessionModel } from "@/pages/session/session-model-helpers"
 import { SessionSidePanel } from "@/pages/session/session-side-panel"
+import { manuscriptPath } from "@/pages/home-novel-manuscript"
 import { TerminalPanel } from "@/pages/session/terminal-panel"
 import { useSessionCommands } from "@/pages/session/use-session-commands"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
@@ -198,7 +200,7 @@ export default function Page() {
   const comments = useComments()
   const terminal = useTerminal()
   const server = useServer()
-  const [searchParams, setSearchParams] = useSearchParams<{ prompt?: string }>()
+  const [searchParams, setSearchParams] = useSearchParams<{ prompt?: string; file?: string }>()
   const location = useLocation()
   const { params, sessionKey, workspaceKey, tabs, view } = useSessionLayout()
   const newSessionDesign = createMemo(() => settings.general.newLayoutDesigns())
@@ -914,6 +916,22 @@ export default function Page() {
     openTab: tabs().open,
     setActive: tabs().setActive,
     loadFile: file.load,
+  })
+
+  const openSessionFile = createOpenSessionFileTab({
+    normalizeTab,
+    openTab: tabs().open,
+    pathFromTab: file.pathFromTab,
+    loadFile: file.load,
+    openReviewPanel,
+    setActive: tabs().setActive,
+  })
+
+  createEffect(() => {
+    const path = manuscriptPath(searchParams.file)
+    if (!path) return
+    openSessionFile(file.tab(path))
+    setSearchParams({ ...searchParams, file: undefined })
   })
 
   const changesTitle = () => {

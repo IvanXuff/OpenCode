@@ -8,7 +8,10 @@ import { useServerSync } from "./server-sync"
 import { useParams } from "@solidjs/router"
 import { decode64 } from "@/utils/base64"
 import {
+  type ApprovalMode,
   acceptKey,
+  approvalModeFor,
+  autoReviewsPermission,
   directoryAcceptKey,
   isDirectoryAutoAccepting,
   autoRespondsPermission,
@@ -66,7 +69,7 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
           if (!value || typeof value !== "object" || Array.isArray(value)) return value
 
           const data = value as Record<string, unknown>
-          if (data.autoAccept) return value
+          if (data.autoAccept) return { ...data, approvalMode: data.approvalMode ?? {} }
 
           return {
             ...data,
@@ -74,11 +77,13 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
               typeof data.autoAcceptEdits === "object" && data.autoAcceptEdits && !Array.isArray(data.autoAcceptEdits)
                 ? data.autoAcceptEdits
                 : {},
+            approvalMode: {},
           }
         },
       },
       createStore({
         autoAccept: {} as Record<string, boolean>,
+        approvalMode: {} as Record<string, ApprovalMode>,
       }),
     )
 
@@ -150,7 +155,34 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
 
     function shouldAutoRespond(permission: PermissionRequest, directory?: string) {
       const session = directory ? serverSync.child(directory, { bootstrap: false })[0].session : []
-      return autoRespondsPermission(store.autoAccept, session, permission, directory)
+      const mode = approvalModeFor(store.approvalMode, store.autoAccept, session, permission.sessionID, directory)
+      return mode === "full" || (mode === "review" && autoReviewsPermission(permission))
+    }
+
+    function mode(sessionID: string, directory?: string) {
+      const sessions = directory ? serverSync.child(directory, { bootstrap: false })[0].session : []
+      return approvalModeFor(store.approvalMode, store.autoAccept, sessions, sessionID, directory)
+    }
+
+    function setMode(sessionID: string, directory: string, value: ApprovalMode) {
+      const key = acceptKey(sessionID, directory)
+      setStore(
+        produce((draft) => {
+          draft.approvalMode[key] = value
+          draft.autoAccept[key] = value === "full"
+          delete draft.approvalMode[sessionID]
+          delete draft.autoAccept[sessionID]
+        }),
+      )
+
+      serverSDK.client.permission
+        .list({ directory })
+        .then((result) => {
+          for (const permission of result.data ?? []) {
+            if (shouldAutoRespond(permission, directory)) respondOnce(permission, directory)
+          }
+        })
+        .catch(() => undefined)
     }
 
     function bumpEnableVersion(sessionID: string, directory?: string) {
@@ -176,6 +208,7 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       setStore(
         produce((draft) => {
           draft.autoAccept[key] = true
+          draft.approvalMode[key] = "full"
         }),
       )
 
@@ -197,6 +230,7 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       setStore(
         produce((draft) => {
           draft.autoAccept[key] = false
+          draft.approvalMode[key] = "ask"
         }),
       )
     }
@@ -207,7 +241,9 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       setStore(
         produce((draft) => {
           draft.autoAccept[key] = true
+          draft.approvalMode[key] = "full"
           delete draft.autoAccept[sessionID]
+          delete draft.approvalMode[sessionID]
         }),
       )
 
@@ -231,8 +267,10 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       setStore(
         produce((draft) => {
           draft.autoAccept[key] = false
+          draft.approvalMode[key] = "ask"
           if (!directory) return
           delete draft.autoAccept[sessionID]
+          delete draft.approvalMode[sessionID]
         }),
       )
     }
@@ -242,6 +280,12 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       respond,
       autoResponds(permission: PermissionRequest, directory?: string) {
         return shouldAutoRespond(permission, directory)
+      },
+      approvalMode(sessionID: string, directory?: string) {
+        return mode(sessionID, directory)
+      },
+      setApprovalMode(sessionID: string, directory: string, value: ApprovalMode) {
+        setMode(sessionID, directory, value)
       },
       isAutoAccepting,
       isAutoAcceptingDirectory,

@@ -351,6 +351,7 @@ describe("HttpApi UI fallback", () => {
       const csp = response.headers.get("content-security-policy") ?? ""
       expect(csp).toContain("script-src 'self' 'wasm-unsafe-eval'")
       expect(csp).toContain(`'sha256-${createHash("sha256").update(script).digest("base64")}'`)
+      expect(csp).toContain("frame-src http://127.0.0.1:4177")
       expect(csp).toContain("connect-src * data:")
     }),
   )

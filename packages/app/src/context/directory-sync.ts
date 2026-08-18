@@ -40,10 +40,12 @@ const isNotFound = (error: unknown) =>
   error.cause !== null &&
   (error.cause as { status?: unknown }).status === 404
 
-function merge<T extends { id: string }>(a: readonly T[], b: readonly T[]) {
+const compareMessages = (a: Message, b: Message) => a.time.created - b.time.created || cmp(a.id, b.id)
+
+function mergeMessages(a: readonly Message[], b: readonly Message[]) {
   const map = new Map(a.map((item) => [item.id, item] as const))
   for (const item of b) map.set(item.id, item)
-  return [...map.values()].sort((x, y) => cmp(x.id, y.id))
+  return [...map.values()].sort(compareMessages)
 }
 
 type OptimisticStore = {
@@ -101,9 +103,8 @@ export function mergeOptimisticPage(page: MessagePage, items: OptimisticItem[]) 
   const confirmed: string[] = []
 
   for (const item of items) {
-    const result = Binary.search(session, item.message.id, (message) => message.id)
-    const found = result.found
-    if (!found) session.splice(result.index, 0, item.message)
+    const found = session.some((message) => message.id === item.message.id)
+    if (!found) session.push(item.message)
 
     const current = part.get(item.message.id)
     if (found && hasParts(current, item.parts)) {
@@ -117,7 +118,7 @@ export function mergeOptimisticPage(page: MessagePage, items: OptimisticItem[]) 
   return {
     cursor: page.cursor,
     complete: page.complete,
-    session,
+    session: session.sort(compareMessages),
     part: [...part.entries()].sort((a, b) => cmp(a[0], b[0])).map(([id, part]) => ({ id, part })),
     confirmed,
   }
@@ -126,8 +127,8 @@ export function mergeOptimisticPage(page: MessagePage, items: OptimisticItem[]) 
 export function applyOptimisticAdd(draft: OptimisticStore, input: OptimisticAddInput) {
   const messages = draft.message[input.sessionID]
   if (messages) {
-    const result = Binary.search(messages, input.message.id, (m) => m.id)
-    messages.splice(result.index, 0, input.message)
+    messages.push(input.message)
+    messages.sort(compareMessages)
   } else {
     draft.message[input.sessionID] = [input.message]
   }
@@ -137,8 +138,8 @@ export function applyOptimisticAdd(draft: OptimisticStore, input: OptimisticAddI
 export function applyOptimisticRemove(draft: OptimisticStore, input: OptimisticRemoveInput) {
   const messages = draft.message[input.sessionID]
   if (messages) {
-    const result = Binary.search(messages, input.messageID, (m) => m.id)
-    if (result.found) messages.splice(result.index, 1)
+    const index = messages.findIndex((message) => message.id === input.messageID)
+    if (index !== -1) messages.splice(index, 1)
   }
   delete draft.part[input.messageID]
 }
@@ -146,10 +147,7 @@ export function applyOptimisticRemove(draft: OptimisticStore, input: OptimisticR
 function setOptimisticAdd(setStore: (...args: unknown[]) => void, input: OptimisticAddInput) {
   setStore("message", input.sessionID, (messages: Message[] | undefined) => {
     if (!messages) return [input.message]
-    const result = Binary.search(messages, input.message.id, (m) => m.id)
-    const next = [...messages]
-    next.splice(result.index, 0, input.message)
-    return next
+    return [...messages, input.message].sort(compareMessages)
   })
   setStore("part", input.message.id, sortParts(input.parts))
 }
@@ -157,10 +155,10 @@ function setOptimisticAdd(setStore: (...args: unknown[]) => void, input: Optimis
 function setOptimisticRemove(setStore: (...args: unknown[]) => void, input: OptimisticRemoveInput) {
   setStore("message", input.sessionID, (messages: Message[] | undefined) => {
     if (!messages) return messages
-    const result = Binary.search(messages, input.messageID, (m) => m.id)
-    if (!result.found) return messages
+    const index = messages.findIndex((message) => message.id === input.messageID)
+    if (index === -1) return messages
     const next = [...messages]
-    next.splice(result.index, 1)
+    next.splice(index, 1)
     return next
   })
   setStore("part", (part: Record<string, Part[] | undefined>) => {
@@ -302,7 +300,7 @@ export const createDirSyncContext = (
       input.client.session.messages({ sessionID: input.sessionID, limit: input.limit, before: input.before }),
     )
     const items = (messages.data ?? []).filter((x) => !!x?.info?.id)
-    const session = items.map((x) => clean(x.info)).sort((a, b) => cmp(a.id, b.id))
+    const session = items.map((x) => clean(x.info)).sort(compareMessages)
     const part = items.map((message) => ({ id: message.info.id, part: sortParts(message.parts) }))
     const cursor = messages.response.headers.get("x-next-cursor") ?? undefined
     return {
@@ -337,7 +335,7 @@ export const createDirSyncContext = (
         }
         const [store] = serverSync.child(input.directory, { bootstrap: false })
         const cached = input.mode === "prepend" ? (store.message[input.sessionID] ?? []) : []
-        const message = input.mode === "prepend" ? merge(cached, next.session) : next.session
+        const message = input.mode === "prepend" ? mergeMessages(cached, next.session) : next.session
         batch(() => {
           input.setStore("message", input.sessionID, reconcile(message, { key: "id" }))
           for (const p of next.part) {

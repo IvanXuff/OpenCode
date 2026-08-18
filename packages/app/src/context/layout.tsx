@@ -4,6 +4,7 @@ import { useLocation } from "@solidjs/router"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { useServerSync } from "./server-sync"
+import type { ProjectMeta } from "./global-sync/types"
 import { useServerSDK } from "./server-sdk"
 import { ServerConnection, useServer } from "./server"
 import { usePlatform } from "./platform"
@@ -71,7 +72,7 @@ type TabHandoff = {
   at: number
 }
 
-export type LocalProject = Partial<Project> & { worktree: string; expanded: boolean }
+export type LocalProject = Partial<Project> & { worktree: string; expanded: boolean; projectMeta?: ProjectMeta }
 
 export type ReviewDiffStyle = "unified" | "split"
 
@@ -408,14 +409,15 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         ? serverSync.data.project.find((x) => x.id === projectID)
         : serverSync.data.project.find((x) => x.worktree === project.worktree)
 
-      // Preserve local icon override from per-workspace localStorage cache (childStore.icon).
-      // Without this, different subdirectories of the same git repo would share the same
-      // icon from the database instead of using their individual overrides.
-      const base = { ...metadata, ...project }
-      if (childStore.icon) {
-        return { ...base, icon: { ...base.icon, override: childStore.icon } }
+      const base = {
+        ...metadata,
+        ...project,
+        ...childStore.projectMeta,
+        ...(childStore.projectMeta?.standalone ? { sandboxes: [] } : {}),
+        projectMeta: childStore.projectMeta,
       }
-      return base
+      const icon = { ...base.icon, override: childStore.icon ?? base.icon?.override }
+      return childStore.icon || base.icon ? { ...base, icon } : base
     }
 
     const roots = createMemo(() => {
@@ -430,6 +432,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     })
 
     const rootFor = (directory: string) => {
+      if (serverSync.child(directory, { bootstrap: false })[0].projectMeta?.standalone) return directory
       const map = roots()
       if (map.size === 0) return directory
 

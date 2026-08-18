@@ -11,6 +11,7 @@ import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { ScrollView } from "@opencode-ai/ui/scroll-view"
+import { Markdown } from "@opencode-ai/ui/markdown"
 import { showToast } from "@/utils/toast"
 import { selectionFromLines, useFile, type FileSelection, type SelectedLineRange } from "@/context/file"
 import { useComments } from "@/context/comments"
@@ -19,6 +20,7 @@ import { usePrompt } from "@/context/prompt"
 import { getSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionTabs } from "@/pages/session/helpers"
+import { manuscriptPath } from "@/pages/home-novel-manuscript"
 
 function FileCommentMenu(props: {
   moreLabel: string
@@ -200,6 +202,7 @@ export function FileTabContent(props: { tab: string }) {
   })
   const contents = createMemo(() => state()?.content?.content ?? "")
   const cacheKey = createMemo(() => sampledChecksum(contents()))
+  const manuscript = createMemo(() => manuscriptPath(path()) !== undefined)
   const selectedLines = createMemo<SelectedLineRange | null>(() => {
     const p = path()
     if (!p) return null
@@ -440,11 +443,22 @@ export function FileTabContent(props: { tab: string }) {
     </div>
   )
 
+  const renderManuscript = (source: string) => (
+    <Show
+      when={source.trim()}
+      fallback={<div class="px-8 py-10 text-13-regular text-text-weak">正文文件不存在或为空。</div>}
+    >
+      <article class="mx-auto max-w-[760px] px-10 py-8 pb-40 select-text">
+        <Markdown text={source} cacheKey={cacheKey()} class="text-14-regular" />
+      </article>
+    </Show>
+  )
+
   return (
     <Tabs.Content value={props.tab} class="mt-3 relative h-full">
       <ScrollView class="h-full" viewportRef={scrollSync.setViewport} onScroll={scrollSync.handleScroll as any}>
         <Switch>
-          <Match when={state()?.loaded}>{renderFile(contents())}</Match>
+          <Match when={state()?.loaded}>{manuscript() ? renderManuscript(contents()) : renderFile(contents())}</Match>
           <Match when={state()?.loading}>
             <div class="px-6 py-4 text-text-weak">{language.t("common.loading")}...</div>
           </Match>

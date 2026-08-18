@@ -5,6 +5,7 @@ import { createServerProjects, ServerConnection, useServer } from "./server"
 import { useServerHealth } from "@/utils/server-health"
 import { createServerSdkContext } from "./server-sdk"
 import { createServerSyncContext } from "./server-sync"
+import type { ProjectMeta } from "./global-sync/types"
 import { getOwner } from "solid-js/web"
 import { QueryClient } from "@tanstack/solid-query"
 import type { ServerScope } from "@/utils/server-scope"
@@ -116,14 +117,19 @@ function createServerCtx(
       ? sync.data.project.find((x) => x.id === projectID)
       : sync.data.project.find((x) => x.worktree === project.worktree)
 
-    // Preserve local icon override from per-workspace localStorage cache (childStore.icon).
-    // Without this, different subdirectories of the same git repo would share the same
-    // icon from the database instead of using their individual overrides.
-    const base = { ...metadata, ...project }
-    if (childStore.icon) {
-      return { ...base, icon: { ...base.icon, override: childStore.icon } }
+    const base = {
+      ...metadata,
+      ...project,
+      ...childStore.projectMeta,
+      ...(childStore.projectMeta?.standalone ? { sandboxes: [] } : {}),
+      projectMeta: childStore.projectMeta,
+    } as Partial<Project> & {
+      worktree: string
+      expanded: boolean
+      projectMeta?: ProjectMeta
     }
-    return base
+    const icon = { ...base.icon, override: childStore.icon ?? base.icon?.override }
+    return childStore.icon || base.icon ? { ...base, icon } : base
   }
 
   const projectsList = createMemo(() => projects.list().map(enrich))

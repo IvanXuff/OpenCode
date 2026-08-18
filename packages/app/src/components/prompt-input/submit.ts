@@ -97,6 +97,8 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
           filename: attachment.filename,
         })),
       })
+      await input.sync.session.sync(input.draft.sessionID, { force: true })
+      setIdle()
       return true
     } catch (err) {
       setIdle()
@@ -476,6 +478,10 @@ export function createPromptSubmit(input: PromptSubmitInput) {
               url: attachment.dataUrl,
               filename: attachment.filename,
             })),
+          })
+          .then(async () => {
+            await sync.session.sync(session.id, { force: true })
+            sync.set("session_status", session.id, { type: "idle" })
           })
           .catch((err) => {
             showToast({

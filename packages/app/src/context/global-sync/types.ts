@@ -20,6 +20,7 @@ import type { Accessor } from "solid-js"
 import type { SetStoreFunction, Store } from "solid-js/store"
 
 export type ProjectMeta = {
+  standalone?: boolean
   name?: string
   icon?: {
     override?: string

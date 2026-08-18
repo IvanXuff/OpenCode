@@ -18,6 +18,7 @@ import {
   homeProjectDirectories,
   homeSessionServerStatus,
   latestRootSession,
+  projectForSession,
   toggleHomeProjectSelection,
 } from "./helpers"
 import { pathKey } from "@/utils/path-key"
@@ -224,6 +225,17 @@ describe("layout workspace helpers", () => {
     expect(displayName({ worktree: "/tmp/app" })).toBe("app")
     expect(displayName({ worktree: "/tmp/app", name: "My App" })).toBe("My App")
     expect(displayName({ worktree: "/" })).toBe("/")
+  })
+
+  test("matches sessions to the exact worktree before a shared project ID", () => {
+    const projects = [
+      { id: "shared", worktree: "F:/novels/first" },
+      { id: "shared", worktree: "F:/novels/second" },
+    ]
+
+    expect(projectForSession(session({ id: "second-session", directory: "F:/novels/second", projectID: "shared" }), projects)).toBe(
+      projects[1],
+    )
   })
 
   test("scopes home project selection by server", () => {
