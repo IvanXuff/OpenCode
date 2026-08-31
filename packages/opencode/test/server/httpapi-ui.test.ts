@@ -322,6 +322,7 @@ describe("HttpApi UI fallback", () => {
       expect(response.status).toBe(200)
       expect(readPath).toBe("/$bunfs/root/assets/app.js")
       expect(response.headers.get("content-type")).toContain("text/javascript")
+      expect(response.headers.get("x-openfiction-ui")).toBe("local")
       expect(yield* responseText(response)).toBe("console.log('embedded')")
     }),
   )
